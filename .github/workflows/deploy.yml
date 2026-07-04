@@ -31,7 +31,11 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        # `npm install` (not `npm ci`) so the Linux runner can reconcile the
+        # platform-specific optional native deps (@tailwindcss/oxide /
+        # @napi-rs/wasm-runtime → @emnapi/*) that a macOS-generated lockfile
+        # can't fully pin. `npm ci`'s strict pre-check rejects that drift.
+        run: npm install --no-audit --no-fund
 
       - name: Build static export
         # GITHUB_ACTIONS=true is set by the runner, so next.config.ts applies the
