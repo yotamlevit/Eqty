@@ -4,6 +4,7 @@ import * as React from "react";
 
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
+import { Switch } from "@/components/ui/switch";
 import { fmtUsd } from "@/lib/format";
 import type { Mode, PlanInputs, SimpleInputs } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -15,6 +16,16 @@ interface InputsPanelProps {
   plan: PlanInputs;
   portfolioMonthlyContribution: number;
   activeLocationLabel: string;
+  /** True when the Custom matrix row is active — unlocks the tax-rate field. */
+  isCustom: boolean;
+  /** Effective tax rate of the active plan, percent (location brackets or flat). */
+  activeEffectiveTaxPct: number;
+  /** Gross annual withdrawal the active net target requires, USD. */
+  activeGross: number;
+  /** The coast age — the auto value for "stop investing age". */
+  coastAge: number;
+  /** Effective stop-investing age (override, or coastAge when on auto). */
+  effectiveStopInvestingAge: number;
   onSimpleChange: (patch: Partial<SimpleInputs>) => void;
   onPlanChange: (patch: Partial<PlanInputs>) => void;
   onPortfolioContributionChange: (value: number) => void;
@@ -60,6 +71,7 @@ function NumberInput({
   max,
   step,
   currency = false,
+  percent = false,
   ariaLabel,
   className,
 }: {
@@ -69,12 +81,19 @@ function NumberInput({
   max?: number;
   step?: number;
   currency?: boolean;
+  percent?: boolean;
   ariaLabel: string;
   className?: string;
 }) {
   const [draft, setDraft] = React.useState<string | null>(null);
   const display =
-    draft !== null ? draft : currency ? fmtUsd(value) : String(value);
+    draft !== null
+      ? draft
+      : currency
+        ? fmtUsd(value)
+        : percent
+          ? `${value}%`
+          : String(value);
 
   const commit = () => {
     if (draft === null) return;
@@ -124,6 +143,31 @@ function FieldRow({
       <div className="flex items-center justify-between gap-4">
         <span className="text-xs text-muted-foreground">{label}</span>
         <div className="w-40">{children}</div>
+      </div>
+      {helper ? (
+        <p className="text-xs text-muted-foreground/70">{helper}</p>
+      ) : null}
+    </div>
+  );
+}
+
+/** Read-only computed figure, styled like a NumberInput but not editable. */
+function ReadonlyField({
+  label,
+  value,
+  helper,
+}: {
+  label: string;
+  value: string;
+  helper?: string;
+}) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-center justify-between gap-4">
+        <span className="text-xs text-muted-foreground">{label}</span>
+        <div className="flex h-8 w-40 items-center justify-end rounded-md border border-input bg-muted/40 px-3 font-mono text-sm tabular-nums text-muted-foreground">
+          {value}
+        </div>
       </div>
       {helper ? (
         <p className="text-xs text-muted-foreground/70">{helper}</p>
@@ -185,6 +229,11 @@ export function InputsPanel({
   plan,
   portfolioMonthlyContribution,
   activeLocationLabel,
+  isCustom,
+  activeEffectiveTaxPct,
+  activeGross,
+  coastAge,
+  effectiveStopInvestingAge,
   onSimpleChange,
   onPlanChange,
   onPortfolioContributionChange,
@@ -194,6 +243,7 @@ export function InputsPanel({
       ? simple.monthlyContribution
       : portfolioMonthlyContribution;
   const totalContribution = baseContribution + plan.extraMonthlyContribution;
+  const stopIsAuto = plan.stopInvestingAge === null;
 
   return (
     <Panel title="PARAMETERS">
@@ -230,6 +280,27 @@ export function InputsPanel({
             />
           </FieldRow>
         )}
+
+        {/* Escalate the contribution with inflation (constant in today's $) or
+            hold it fixed in nominal dollars. */}
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex flex-col">
+            <span className="text-xs text-muted-foreground">
+              Raise with inflation
+            </span>
+            <span className="text-[11px] text-muted-foreground/70">
+              Grow contributions so they stay constant in today&apos;s $
+            </span>
+          </div>
+          <Switch
+            size="sm"
+            checked={plan.escalateContributions}
+            onCheckedChange={(v) =>
+              onPlanChange({ escalateContributions: v })
+            }
+            aria-label="Raise contributions with inflation"
+          />
+        </div>
 
         <SliderRow
           label="Additional contribution"
@@ -272,6 +343,40 @@ export function InputsPanel({
           />
         </FieldRow>
 
+        <div className="flex flex-col gap-1.5">
+          <div className="flex items-center justify-between gap-4">
+            <span className="text-xs text-muted-foreground">
+              Stop investing age
+            </span>
+            <div className="w-40">
+              <NumberInput
+                min={plan.currentAge}
+                max={90}
+                value={Math.round(effectiveStopInvestingAge)}
+                ariaLabel="Stop investing age"
+                onCommit={(n) => onPlanChange({ stopInvestingAge: n })}
+              />
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground/70">
+            {stopIsAuto ? (
+              <>Auto — your coast age ({Math.round(coastAge)}). Draws the graph line
+              for stopping contributions here.</>
+            ) : (
+              <>
+                Custom.{" "}
+                <button
+                  type="button"
+                  onClick={() => onPlanChange({ stopInvestingAge: null })}
+                  className="underline underline-offset-2 hover:text-foreground"
+                >
+                  Reset to coast age ({Math.round(coastAge)})
+                </button>
+              </>
+            )}
+          </p>
+        </div>
+
         <SliderRow
           label="Inflation"
           value={plan.inflationPct}
@@ -290,18 +395,50 @@ export function InputsPanel({
           onCommit={(n) => onPlanChange({ swrPct: n })}
         />
 
-        <FieldRow
-          label="Target net spend / yr"
-          helper={`Net of tax in ${activeLocationLabel}. Selecting a lifestyle in the matrix overwrites this with its researched cost.`}
-        >
-          <NumberInput
-            currency
-            min={0}
-            value={plan.targetNetAnnualSpend}
-            ariaLabel="Target net spend per year"
-            onCommit={(n) => onPlanChange({ targetNetAnnualSpend: n })}
+        {/* Net → tax → gross. Net is always editable; tax is editable only in
+            Custom mode (else it shows the active lifestyle's effective rate);
+            gross is always the computed result. Selecting a lifestyle in the
+            matrix overwrites all three. */}
+        <div className="flex flex-col gap-3 border-t pt-4">
+          <FieldRow label="Target net spend / yr">
+            <NumberInput
+              currency
+              min={0}
+              value={plan.targetNetAnnualSpend}
+              ariaLabel="Target net spend per year"
+              onCommit={(n) => onPlanChange({ targetNetAnnualSpend: n })}
+            />
+          </FieldRow>
+
+          {isCustom ? (
+            <FieldRow
+              label="Tax rate"
+              helper="Custom flat rate on the whole draw — edit freely."
+            >
+              <NumberInput
+                percent
+                min={0}
+                max={100}
+                step={0.1}
+                value={plan.customTaxPct}
+                ariaLabel="Custom tax rate percent"
+                onCommit={(n) => onPlanChange({ customTaxPct: n })}
+              />
+            </FieldRow>
+          ) : (
+            <ReadonlyField
+              label="Tax rate"
+              value={`${activeEffectiveTaxPct.toFixed(1)}%`}
+              helper={`Effective rate in ${activeLocationLabel}. Pick "Custom" atop the matrix to set your own.`}
+            />
+          )}
+
+          <ReadonlyField
+            label="Gross draw / yr"
+            value={fmtUsd(Math.round(activeGross))}
+            helper="Pre-tax withdrawal needed to net your target; drives the FIRE number."
           />
-        </FieldRow>
+        </div>
       </div>
     </Panel>
   );

@@ -30,6 +30,7 @@ import {
   monthsToCoast,
   monthsToTarget,
   project,
+  projectStopInvestReal,
   requiredMonthlyContribution,
 } from "@/lib/projection";
 import {
@@ -40,7 +41,7 @@ import {
 } from "@/lib/selectors";
 import { cn } from "@/lib/utils";
 import { grossForNet, LOCATIONS } from "@/lib/tax";
-import type { LocationPlan } from "@/lib/types";
+import type { LocationPlan, LocationProfile } from "@/lib/types";
 import { useEqtyState } from "@/lib/use-eqty-state";
 import { useTheme } from "@/lib/use-theme";
 
@@ -62,40 +63,75 @@ export default function Home() {
     const contrib = monthlyContribution(state);
     const returnPct = expectedReturnPct(state);
 
-    const projection = project({
+    const projectArgs = {
       startingAssets: start,
       monthlyContribution: contrib,
       annualReturnPct: returnPct,
       inflationPct: state.plan.inflationPct,
       currentAge: state.plan.currentAge,
       horizonYears: MAX_HORIZON_YEARS,
-    });
+    };
+    const projOpts = {
+      escalateContributions: state.plan.escalateContributions,
+    };
+    const projection = project(projectArgs, projOpts);
 
-    // One matrix row per location: take its fixed researched net spend, invert
-    // the local tax rules to the required gross draw — taxing the FULL draw as
-    // capital gain (gainRatio = 1), the mature rate once a long retirement has
-    // exhausted cost basis — size the portfolio that sustains it, and find when
-    // the real trajectory crosses.
-    const rows: LocationPlan[] = LOCATIONS.map((location) => {
-      const netAnnualSpend = location.netAnnualSpend;
-      const tax = grossForNet(netAnnualSpend, location, 1);
+    // The Custom row: a synthetic "location" whose tax is a single flat rate the
+    // user sets directly (customTaxPct) on the whole draw. It is the escape
+    // hatch from the preset lifestyles — set net spend and tax freely, no
+    // location bracket schedule. It uses the live target net spend, not a fixed
+    // figure, and leads the matrix so it sits at the top.
+    const customLocation: LocationProfile = {
+      id: "custom",
+      label: "Custom",
+      city: "Manual entry",
+      country: "your own numbers",
+      currency: "USD",
+      netAnnualSpend: state.plan.targetNetAnnualSpend,
+      blurb: "Set your own net spend and tax rate — not tied to any location.",
+      lifestyle:
+        "Your own numbers. Set the target net spend and a flat tax rate in the Parameters panel; the gross withdrawal and FIRE number update live. Use this when none of the preset lifestyles fit — you are not locked to the matrix.",
+      components: [
+        {
+          id: "custom-flat",
+          label: `Custom flat tax (${state.plan.customTaxPct}%)`,
+          kind: "flat",
+          base: "gain",
+          rate: state.plan.customTaxPct / 100,
+        },
+      ],
+      notes: [
+        "Flat tax on the whole draw — edit the net spend and tax % directly in the Parameters panel.",
+      ],
+    };
+
+    // One matrix row per lifestyle: real rows invert their FIXED researched net
+    // spend through the local tax rules (taxing the FULL draw as capital gain,
+    // gainRatio = 1 — the mature rate once basis is exhausted); the Custom row
+    // uses the live target net spend and the flat custom rate.
+    const makeRow = (location: LocationProfile, net: number): LocationPlan => {
+      const tax = grossForNet(net, location, 1);
       const fireNumber = tax.gross / (state.plan.swrPct / 100);
       return {
         location,
-        netAnnualSpend,
+        netAnnualSpend: net,
         tax,
         fireNumber,
         monthsToFire: monthsToTarget(projection, fireNumber),
       };
-    });
+    };
+    const rows: LocationPlan[] = [
+      makeRow(customLocation, state.plan.targetNetAnnualSpend),
+      ...LOCATIONS.map((location) => makeRow(location, location.netAnnualSpend)),
+    ];
 
+    // rows[1] (first real lifestyle) is the fallback, since rows[0] is Custom.
     const active =
-      rows.find((r) => r.location.id === state.plan.locationId) ?? rows[0];
+      rows.find((r) => r.location.id === state.plan.locationId) ?? rows[1];
 
     // The headline plan runs off the manually-set target net spend (seeded by
     // clicking a matrix row, but freely editable in the parameters), grossed up
-    // in the ACTIVE location's tax regime. The matrix rows stay a fixed
-    // reference; this is the number the user is actually planning to.
+    // in the ACTIVE tax regime — a location's brackets, or the flat Custom rate.
     const activeTax = grossForNet(
       state.plan.targetNetAnnualSpend,
       active.location,
@@ -119,6 +155,28 @@ export default function Home() {
     );
     const coastMonths = monthsToCoast(projection.points, coast);
 
+    // "Stop investing" line: contributions run until this age, then stop and the
+    // balance compounds untouched. Defaults (null) to the coast age — the point
+    // where coasting alone still reaches FI by retirement — but is overridable.
+    const coastAge =
+      coastMonths !== null
+        ? state.plan.currentAge + coastMonths / 12
+        : state.plan.retirementAge;
+    const stopInvestingAge = state.plan.stopInvestingAge ?? coastAge;
+    const totalMonths = projection.points.length - 1;
+    const stopMonth = Math.min(
+      totalMonths,
+      Math.max(
+        0,
+        Math.round((stopInvestingAge - state.plan.currentAge) * 12)
+      )
+    );
+    const stopInvestReal = projectStopInvestReal(
+      projectArgs,
+      stopMonth,
+      projOpts
+    );
+
     // The chart window scales to the plan instead of a fixed span: a couple
     // years past retirement, stretched if FI lands later, never under 10y.
     const chartMonths = Math.min(
@@ -131,7 +189,7 @@ export default function Home() {
     );
     const chartPoints = projection.points
       .slice(0, chartMonths + 1)
-      .map((p, i) => ({ ...p, coast: coast[i] }));
+      .map((p, i) => ({ ...p, coast: coast[i], stopInvest: stopInvestReal[i] }));
     const coastNow = coast[0];
     const retirementPoint =
       projection.points[
@@ -143,6 +201,7 @@ export default function Home() {
       annualReturnPct: returnPct,
       inflationPct: state.plan.inflationPct,
       months: retirementMonths,
+      escalateContributions: state.plan.escalateContributions,
     });
 
     return {
@@ -155,6 +214,11 @@ export default function Home() {
       activeTax,
       activeFireNumber,
       activeMonthsToFire,
+      activeIsCustom: active.location.id === "custom",
+      activeEffectiveTaxPct: activeTax.effectiveRate * 100,
+      activeGross: activeTax.gross,
+      coastAge,
+      stopInvestingAge,
       retirementMonths,
       chartMonths,
       chartPoints,
@@ -280,6 +344,11 @@ export default function Home() {
             plan={state.plan}
             portfolioMonthlyContribution={state.portfolio.monthlyContribution}
             activeLocationLabel={active.location.label}
+            isCustom={derived.activeIsCustom}
+            activeEffectiveTaxPct={derived.activeEffectiveTaxPct}
+            activeGross={derived.activeGross}
+            coastAge={derived.coastAge}
+            effectiveStopInvestingAge={derived.stopInvestingAge}
             onSimpleChange={patchSimple}
             onPlanChange={patchPlan}
             onPortfolioContributionChange={setPortfolioContribution}
@@ -298,6 +367,7 @@ export default function Home() {
                 monthsToFire={derived.activeMonthsToFire}
                 retirementAge={state.plan.retirementAge}
                 monthsToCoast={derived.coastMonths}
+                stopInvestingAge={derived.stopInvestingAge}
                 appearance={theme}
               />
             </Panel>
@@ -334,9 +404,18 @@ export default function Home() {
         <GeoMatrix
           rows={derived.rows}
           activeId={active.location.id}
-          // Selecting a lifestyle adopts both its tax regime AND overwrites the
-          // manual target net spend with that lifestyle's researched cost.
+          // Selecting a lifestyle adopts its tax regime AND overwrites the manual
+          // target net spend with that lifestyle's researched cost. Selecting
+          // Custom keeps the current net but unlocks the tax field, seeding it
+          // from whatever effective rate was active so the switch is continuous.
           onSelect={(id) => {
+            if (id === "custom") {
+              patchPlan({
+                locationId: "custom",
+                customTaxPct: Math.round(derived.activeEffectiveTaxPct * 10) / 10,
+              });
+              return;
+            }
             const loc = LOCATIONS.find((l) => l.id === id);
             patchPlan({
               locationId: id,

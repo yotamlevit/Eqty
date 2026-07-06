@@ -76,6 +76,10 @@ function reviveState(raw: string): AppState {
           d.plan.extraMonthlyContribution
         )
       ),
+      escalateContributions:
+        typeof parsed.plan?.escalateContributions === "boolean"
+          ? parsed.plan.escalateContributions
+          : d.plan.escalateContributions,
       inflationPct: Math.max(0, finiteOr(parsed.plan?.inflationPct, d.plan.inflationPct)),
       // The SWR divides the gross draw; zero or negative would blow up to
       // Infinity, so anything below a sane floor falls back to the default.
@@ -87,6 +91,17 @@ function reviveState(raw: string): AppState {
         0,
         finiteOr(parsed.plan?.targetNetAnnualSpend, d.plan.targetNetAnnualSpend)
       ),
+      customTaxPct: Math.min(
+        100,
+        Math.max(0, finiteOr(parsed.plan?.customTaxPct, d.plan.customTaxPct))
+      ),
+      // Distinct from the numeric fields: null is a valid value (auto), so a
+      // non-finite persisted value falls back to null rather than a default age.
+      stopInvestingAge:
+        typeof parsed.plan?.stopInvestingAge === "number" &&
+        Number.isFinite(parsed.plan.stopInvestingAge)
+          ? parsed.plan.stopInvestingAge
+          : null,
       locationId:
         typeof parsed.plan?.locationId === "string"
           ? parsed.plan.locationId

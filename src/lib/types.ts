@@ -68,6 +68,12 @@ export interface PlanInputs {
    * contribution, USD. Driven by the what-if slider in the parameters panel.
    */
   extraMonthlyContribution: number;
+  /**
+   * Grow the monthly contribution with inflation so it stays constant in
+   * today's dollars. When false, the nominal contribution is fixed and its real
+   * value erodes over time.
+   */
+  escalateContributions: boolean;
   /** Expected annual inflation, percent. */
   inflationPct: number;
   /** Safe withdrawal rate, percent (e.g. 4 = 4%). */
@@ -79,7 +85,18 @@ export interface PlanInputs {
    * FI, and coast math against the active location's tax regime.
    */
   targetNetAnnualSpend: number;
-  /** Active lifestyle location (LocationProfile.id). */
+  /**
+   * Flat effective tax rate applied to the whole draw in Custom mode, percent.
+   * Only used when locationId === "custom"; lets the user set tax (and thus the
+   * gross draw) freely instead of inheriting a location's bracket schedule.
+   */
+  customTaxPct: number;
+  /**
+   * Age at which contributions stop, for the "if you stop investing" chart line.
+   * null = auto (tracks the coast age); a number overrides it.
+   */
+  stopInvestingAge: number | null;
+  /** Active lifestyle location (LocationProfile.id), or "custom" for manual tax. */
   locationId: string;
 }
 
@@ -206,6 +223,12 @@ export interface ProjectionPoint {
    * dashboard when a coast overlay is displayed.
    */
   coast?: number;
+  /**
+   * Real (today's $) balance if contributions stop at the chosen "stop
+   * investing" age and the portfolio then compounds untouched. Equals `real`
+   * up to that age and diverges below it after. Populated by the dashboard.
+   */
+  stopInvest?: number;
 }
 
 export interface ProjectionResult {

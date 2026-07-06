@@ -26,18 +26,35 @@ export interface ProjectArgs {
   horizonYears: number;
 }
 
+export interface ProjectOpts {
+  /**
+   * Grow the monthly contribution with inflation so it stays constant in
+   * today's dollars (a fixed nominal contribution erodes in real terms). Off by
+   * default — the base amount is held fixed.
+   */
+  escalateContributions?: boolean;
+}
+
 /**
  * Project a portfolio forward at monthly resolution.
  *
  * The monthly growth rate is the geometric twelfth-root of the annual rate,
  * r_m = (1 + annualReturnPct/100)^(1/12) - 1, so twelve compounded months
- * reproduce the annual return exactly. Each contribution lands at the END of
- * its month (ordinary annuity): grow first, then add.
+ * reproduce the annual return exactly. Each contribution lands at the START of
+ * its month (annuity due): add first, then grow, so it earns that month's
+ * return too — matching how money invested at the start of the month behaves.
+ *
+ * With `escalateContributions`, the monthly amount grows at the inflation rate
+ * (constant in today's dollars); otherwise the nominal amount is fixed and its
+ * real value erodes over time.
  *
  * Point 0 is today: nominal = real = contributed = startingAssets, age =
  * currentAge. The series runs month 0..horizonYears*12 inclusive.
  */
-export function project(args: ProjectArgs): ProjectionResult {
+export function project(
+  args: ProjectArgs,
+  opts: ProjectOpts = {}
+): ProjectionResult {
   const {
     startingAssets,
     monthlyContribution,
@@ -52,15 +69,20 @@ export function project(args: ProjectArgs): ProjectionResult {
   // "loses everything each year", which the floor preserves.
   const monthlyRate =
     Math.pow(Math.max(0, 1 + annualReturnPct / 100), 1 / 12) - 1;
+  const contribGrowth = opts.escalateContributions ? inflationPct / 100 : 0;
   const totalMonths = Math.round(horizonYears * 12);
 
   const points: ProjectionPoint[] = [];
   let nominal = startingAssets;
+  let contributed = startingAssets;
 
   for (let month = 0; month <= totalMonths; month++) {
     if (month > 0) {
-      // Grow the standing balance, then add this month's contribution.
-      nominal = nominal * (1 + monthlyRate) + monthlyContribution;
+      // Add this month's contribution at the start, then grow the whole balance.
+      const c =
+        monthlyContribution * Math.pow(1 + contribGrowth, (month - 1) / 12);
+      nominal = (nominal + c) * (1 + monthlyRate);
+      contributed += c;
     }
     const deflator = Math.pow(1 + inflationPct / 100, month / 12);
     points.push({
@@ -68,11 +90,53 @@ export function project(args: ProjectArgs): ProjectionResult {
       age: currentAge + month / 12,
       nominal,
       real: nominal / deflator,
-      contributed: startingAssets + monthlyContribution * month,
+      contributed,
     });
   }
 
   return { points, blendedReturnPct: annualReturnPct, horizonYears };
+}
+
+/**
+ * Real (today's-dollar) balance at each month if contributions stop after
+ * `stopMonth` and the portfolio then compounds untouched. Identical to
+ * `project`'s real track up to `stopMonth`, then diverges below it. Returned as
+ * a flat array aligned to months 0..horizonYears*12, ready to graft onto the
+ * projection points as the "if you stop investing" line.
+ */
+export function projectStopInvestReal(
+  args: ProjectArgs,
+  stopMonth: number,
+  opts: ProjectOpts = {}
+): number[] {
+  const {
+    startingAssets,
+    monthlyContribution,
+    annualReturnPct,
+    inflationPct,
+    horizonYears,
+  } = args;
+  const monthlyRate =
+    Math.pow(Math.max(0, 1 + annualReturnPct / 100), 1 / 12) - 1;
+  const contribGrowth = opts.escalateContributions ? inflationPct / 100 : 0;
+  const totalMonths = Math.round(horizonYears * 12);
+
+  const out: number[] = [];
+  let nominal = startingAssets;
+  for (let month = 0; month <= totalMonths; month++) {
+    if (month > 0) {
+      // Add at the start of the month (only while still investing), then grow —
+      // same annuity-due timing and escalation as `project`.
+      const c =
+        month <= stopMonth
+          ? monthlyContribution * Math.pow(1 + contribGrowth, (month - 1) / 12)
+          : 0;
+      nominal = (nominal + c) * (1 + monthlyRate);
+    }
+    const deflator = Math.pow(1 + inflationPct / 100, month / 12);
+    out.push(nominal / deflator);
+  }
+  return out;
 }
 
 /**
@@ -168,11 +232,12 @@ export function monthsToCoast(
 }
 
 /**
- * Constant nominal monthly contribution required for the REAL balance to
- * reach `fireNumber` (today's dollars) in exactly `months`. Inverts the same
- * ordinary-annuity recurrence `project` uses, so plugging the result back
- * into `project` reproduces the target. Returns null when months <= 0 and 0
- * when the starting assets alone already get there.
+ * Starting monthly contribution required for the REAL balance to reach
+ * `fireNumber` (today's dollars) in exactly `months`. Inverts the same
+ * start-of-month (annuity-due) recurrence `project` uses — with matching
+ * escalation — so plugging the result back into `project` reproduces the
+ * target. Returns null when months <= 0 and 0 when starting assets alone
+ * already get there.
  */
 export function requiredMonthlyContribution(args: {
   fireNumber: number;
@@ -180,6 +245,7 @@ export function requiredMonthlyContribution(args: {
   annualReturnPct: number;
   inflationPct: number;
   months: number;
+  escalateContributions?: boolean;
 }): number | null {
   const { fireNumber, startingAssets, annualReturnPct, inflationPct, months } =
     args;
@@ -187,13 +253,23 @@ export function requiredMonthlyContribution(args: {
 
   const monthlyRate =
     Math.pow(Math.max(0, 1 + annualReturnPct / 100), 1 / 12) - 1;
+  const contribGrowth = args.escalateContributions ? inflationPct / 100 : 0;
   const growth = Math.pow(1 + monthlyRate, months);
   const nominalTarget =
     fireNumber * Math.pow(1 + inflationPct / 100, months / 12);
-  const annuityFactor =
-    monthlyRate === 0 ? months : (growth - 1) / monthlyRate;
 
-  const needed = (nominalTarget - startingAssets * growth) / annuityFactor;
+  // Future value at `months` of a $1 starting contribution, added at the start
+  // of each month (annuity due) and escalated: contribution m earns growth for
+  // (months - m + 1) months. Summed directly — exact and cheap for planning
+  // horizons, and matches project()'s recurrence exactly.
+  let factor = 0;
+  for (let m = 1; m <= months; m++) {
+    const esc = Math.pow(1 + contribGrowth, (m - 1) / 12);
+    factor += esc * Math.pow(1 + monthlyRate, months - m + 1);
+  }
+  if (factor <= 0) return null;
+
+  const needed = (nominalTarget - startingAssets * growth) / factor;
   return Math.max(0, needed);
 }
 

@@ -41,6 +41,7 @@ interface Palette {
   nominal: string; // series hue
   contributed: string; // series hue (neutral gray by design)
   coast: string; // series hue (dashed path)
+  stopInvest: string; // series hue — "if you stop investing" line
   grid: string; // hairline gridline
   axisText: string; // all chrome text — axes, legend, tooltip labels
   threshold: string; // dashed FIRE-target line
@@ -58,6 +59,7 @@ const PALETTES: Record<Appearance, Palette> = {
     nominal: "#7aa7ff",
     contributed: "#9aa0a6",
     coast: "#ffb74d",
+    stopInvest: "#66bb6a",
     grid: "#454545",
     axisText: "#bdbdbd",
     threshold: "#a0a0a0",
@@ -73,6 +75,7 @@ const PALETTES: Record<Appearance, Palette> = {
     nominal: "#2563eb",
     contributed: "#6b7280",
     coast: "#d97706",
+    stopInvest: "#16a34a",
     grid: "#e5e5e5",
     axisText: "#6b7280",
     threshold: "#9ca3af",
@@ -100,10 +103,12 @@ export interface ProjectionChartProps {
   monthsToFire: number | null;
   retirementAge: number;
   monthsToCoast: number | null;
+  /** Age contributions stop, for the "if you stop investing" line + marker. */
+  stopInvestingAge?: number | null;
   appearance?: Appearance;
 }
 
-type SeriesKey = "real" | "nominal" | "contributed" | "coast";
+type SeriesKey = "real" | "stopInvest" | "nominal" | "contributed" | "coast";
 
 interface SeriesMeta {
   key: SeriesKey;
@@ -152,11 +157,17 @@ function downsample(points: ProjectionPoint[]): ProjectionPoint[] {
   return out;
 }
 
-/** Integer age ticks every 5 years across the projected span. */
+/**
+ * Integer age ticks across the projected span, with an adaptive step so ~8-12
+ * labels show (denser than a fixed 5-year grid, which left long spans hard to
+ * read). Step snaps to 1 / 2 / 3 / 5 / 10 years.
+ */
 function ageTicks(minAge: number, maxAge: number): number[] {
+  const span = Math.max(1, maxAge - minAge);
+  const step = [1, 2, 3, 5, 10].find((s) => span / s <= 12) ?? 10;
   const ticks: number[] = [];
-  const first = Math.ceil(minAge / 5) * 5;
-  for (let a = first; a <= maxAge; a += 5) ticks.push(a);
+  const first = Math.ceil(minAge / step) * step;
+  for (let a = first; a <= maxAge; a += step) ticks.push(a);
   return ticks;
 }
 
@@ -192,19 +203,26 @@ export function ProjectionChart({
   monthsToFire,
   retirementAge,
   monthsToCoast,
+  stopInvestingAge,
   appearance = "dark",
 }: ProjectionChartProps) {
   const c = PALETTES[appearance];
   const series: SeriesMeta[] = [
     { key: "real", label: "Real (today's $)", color: c.real },
+    { key: "stopInvest", label: "If you stop investing", color: c.stopInvest },
+    { key: "coast", label: "Coast Path", color: c.coast, dashed: true },
     { key: "nominal", label: "Nominal", color: c.nominal },
     { key: "contributed", label: "Contributed", color: c.contributed },
-    { key: "coast", label: "Coast Path", color: c.coast, dashed: true },
   ];
 
   // Session-local legend toggles. Hiding a series removes it from the chart AND
   // from the y-max scan below, so the axis rescales to what remains visible.
-  const [hidden, setHidden] = useState<Set<SeriesKey>>(new Set());
+  // Nominal and contributed start hidden to keep the default view legible —
+  // real, the stop-investing line, and the coast path — matching the FIRE
+  // threshold; users toggle the rest back on.
+  const [hidden, setHidden] = useState<Set<SeriesKey>>(
+    () => new Set<SeriesKey>(["nominal", "contributed"])
+  );
   const shown = (key: SeriesKey) => !hidden.has(key);
   const toggle = (key: SeriesKey) =>
     setHidden((prev) => {
@@ -230,6 +248,8 @@ export function ProjectionChart({
     ...points.map((p) => {
       let m = 0;
       if (shown("real")) m = Math.max(m, p.real);
+      if (shown("stopInvest") && Number.isFinite(p.stopInvest))
+        m = Math.max(m, p.stopInvest as number);
       if (shown("nominal")) m = Math.max(m, p.nominal);
       if (shown("contributed")) m = Math.max(m, p.contributed);
       if (shown("coast")) m = Math.max(m, coastOrZero(p));
@@ -290,7 +310,9 @@ export function ProjectionChart({
             data={data}
             margin={{ top: 16, right: 20, bottom: 8, left: 8 }}
           >
-            <CartesianGrid vertical={false} stroke={c.grid} strokeWidth={1} />
+            {/* Both axes gridded now — vertical lines at the age ticks make it
+                far easier to read a value at a given age and spot crossings. */}
+            <CartesianGrid stroke={c.grid} strokeWidth={1} />
 
             <XAxis
               dataKey="age"
@@ -367,6 +389,25 @@ export function ProjectionChart({
               />
             )}
 
+            {/* If you stop investing — real balance when contributions cease at
+                the chosen age. Tracks REAL until then, diverges below after. */}
+            {shown("stopInvest") && (
+              <Line
+                type="monotone"
+                dataKey="stopInvest"
+                stroke={c.stopInvest}
+                strokeWidth={2}
+                dot={false}
+                activeDot={{
+                  r: 3,
+                  fill: c.stopInvest,
+                  stroke: c.dotRing,
+                  strokeWidth: 1,
+                }}
+                isAnimationActive
+              />
+            )}
+
             {/* Real value — the hero: heaviest line + area wash. Hiding it also
                 removes the area, active dot, and endpoint label (all children). */}
             {shown("real") && (
@@ -424,6 +465,25 @@ export function ProjectionChart({
                 label={{ value: "FI", position: "top", fill: c.axisText, fontSize: 10 }}
               />
             )}
+
+            {/* Stop-investing age — green dashed marker matching its line. */}
+            {stopInvestingAge != null &&
+              Number.isFinite(stopInvestingAge) &&
+              stopInvestingAge >= minAge &&
+              stopInvestingAge <= maxAge && (
+                <ReferenceLine
+                  x={stopInvestingAge}
+                  stroke={c.stopInvest}
+                  strokeWidth={1}
+                  strokeDasharray="2 3"
+                  label={{
+                    value: "STOP INVEST",
+                    position: "insideBottomLeft",
+                    fill: c.stopInvest,
+                    fontSize: 10,
+                  }}
+                />
+              )}
 
             {/* Coast crossing — where REAL meets the coast path. Surface-ringed.
                 Tied to the coast series, so hiding COAST removes it too. */}

@@ -71,11 +71,16 @@ export const DEFAULT_STATE: AppState = {
     currentAge: 32,
     retirementAge: 55,
     extraMonthlyContribution: 0,
+    escalateContributions: false,
     inflationPct: 3,
     swrPct: 4,
     // Seeded to the default location's (NJ Waterfront) researched net spend;
     // freely editable, and overwritten when another lifestyle is selected.
     targetNetAnnualSpend: 150_000,
+    // Only takes effect in Custom mode (locationId === "custom").
+    customTaxPct: 20,
+    // null = auto: the "stop investing" line tracks the coast age.
+    stopInvestingAge: null,
     locationId: "nj-waterfront",
   },
 };

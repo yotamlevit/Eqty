@@ -98,6 +98,7 @@ export function GeoMatrix({
           {rows.map((r) => {
             const isActive = r.location.id === activeId;
             const isExpanded = expanded.has(r.location.id);
+            const isCustomRow = r.location.id === "custom";
             const colIndex = colIndexOf(r.netAnnualSpend, baselineNetSpend);
             return (
               <Fragment key={r.location.id}>
@@ -169,12 +170,20 @@ export function GeoMatrix({
                     </div>
                   </TableCell>
                   <TableCell className="px-3 text-right align-top">
-                    <div className="flex flex-col items-end gap-0.5">
-                      <span className="font-mono tabular-nums">{colIndex}</span>
-                      <span className="text-[11px] text-muted-foreground">
-                        {colDeltaCaption(colIndex)}
+                    {isCustomRow ? (
+                      <span className="font-mono tabular-nums text-muted-foreground">
+                        —
                       </span>
-                    </div>
+                    ) : (
+                      <div className="flex flex-col items-end gap-0.5">
+                        <span className="font-mono tabular-nums">
+                          {colIndex}
+                        </span>
+                        <span className="text-[11px] text-muted-foreground">
+                          {colDeltaCaption(colIndex)}
+                        </span>
+                      </div>
+                    )}
                   </TableCell>
                   <TableCell className={numClass}>
                     {fmtUsd(r.netAnnualSpend)}
